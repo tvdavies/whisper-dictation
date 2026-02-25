@@ -1,0 +1,15 @@
+#!/bin/bash
+# Fast Whisper Dictation launcher
+# Kill any existing instance
+pkill -f "dictation.py" 2>/dev/null
+sleep 1
+
+VENV=~/.local/share/whisper-dictation/venv
+PYVER=$("$VENV/bin/python3" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+SITE="$VENV/lib/python$PYVER/site-packages/nvidia"
+export LD_LIBRARY_PATH="$SITE/cublas/lib:$SITE/cudnn/lib:$SITE/cuda_runtime/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+LOG=~/.local/share/whisper-dictation/dictation.log
+exec "$VENV/bin/python3" -u \
+    ~/.local/share/whisper-dictation/dictation.py "$@" \
+    >> "$LOG" 2>&1
