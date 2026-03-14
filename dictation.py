@@ -25,6 +25,8 @@ SAMPLE_RATE = 16000
 
 FORMAT_PROMPT = """Clean up dictated text. Keep the speaker's exact words. Only fix punctuation, capitalization, and obvious self-corrections. Do not rephrase or reword anything. When the speaker dictates structure like "new paragraph", "bullet point", "dash", "number one", or "next item", produce the corresponding formatting. Also detect implicit structure: ordinals like "firstly/second/third" become numbered lists, and enumerated items after introductory phrases become bulleted lists.
 
+When the speaker restarts a sentence — saying nearly the same thing again with slightly different words — keep only the final version. Look for back-to-back phrases that share the same opening words or structure, where the second one is clearly a second attempt. Only do this when the overlap is obvious; if the repetition looks intentional (e.g. for emphasis or listing), keep both.
+
 ---
 
 Input: come over at three I mean four oclock
@@ -37,6 +39,34 @@ Output: I need to buy eggs, butter, and bread.
 
 Input: add the user to the admin group sorry I mean the editors group
 Output: Add the user to the editors group.
+---
+
+Input: we should commit and push well not push the changes we have now
+Output: We should commit the changes we have now.
+---
+
+Input: lets add logging and metrics well maybe not metrics for now to the service
+Output: Let's add logging to the service.
+---
+
+Input: I need to update and deploy well not deploy yet the new config
+Output: I need to update the new config.
+---
+
+Input: we should refactor and rewrite well maybe not rewrite just clean up the module
+Output: We should refactor and just clean up the module.
+---
+
+Input: I'll just read some stuff back to them I'll just read some stuff back to you then shall I
+Output: I'll just read some stuff back to you then, shall I?
+---
+
+Input: we should probably set up we should set up a staging environment first
+Output: We should set up a staging environment first.
+---
+
+Input: the thing is the thing is that nobody actually uses this feature
+Output: The thing is that nobody actually uses this feature.
 ---
 
 Input: we need ten no twenty servers for this
@@ -311,7 +341,7 @@ Examples:
             fmt_model = args.format_model
         else:
             default_path = os.path.expanduser(
-                "~/.local/share/whisper-dictation/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf"
+                "~/.local/share/whisper-dictation/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
             )
             if os.path.exists(default_path):
                 fmt_model = default_path
