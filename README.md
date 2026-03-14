@@ -2,7 +2,7 @@
 
 GPU-accelerated push-to-talk dictation for Linux/X11. Hold a key to record, release to transcribe and paste.
 
-Uses [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) for speech-to-text and [LLaMA CPP](https://github.com/abetlen/llama-cpp-python) with a small LLaMA 3.2 3B model to clean up punctuation, capitalization, and formatting.
+Uses [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) for speech-to-text and [LLaMA CPP](https://github.com/abetlen/llama-cpp-python) with a [Qwen 2.5 7B Instruct](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct) model to clean up punctuation, capitalization, and formatting.
 
 ## How it works
 
@@ -14,6 +14,8 @@ Uses [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) for speech-to-t
 The formatting model handles things like:
 - Fixing punctuation and capitalization
 - Resolving self-corrections ("eggs milk no wait not milk butter" → "eggs, butter")
+- Detecting sentence restarts ("I think we should deploy to I think we should deploy to production" → "I think we should deploy to production.")
+- Handling retractions ("commit and push well not push the changes" → "commit the changes")
 - Converting dictated structure ("new paragraph", "bullet point", "number one") into actual formatting
 - Detecting implicit lists from natural speech patterns
 
@@ -46,18 +48,37 @@ cd whisper-dictation
 The install script will:
 - Create a Python venv at `~/.local/share/whisper-dictation/venv/`
 - Install Python dependencies including CUDA-enabled `llama-cpp-python`
-- Download the LLaMA 3.2 3B Instruct GGUF model (~2 GB)
+- Download the Qwen 2.5 7B Instruct GGUF model (~4.4 GB)
 - Install the launcher to `~/.local/bin/dictation`
 
 ## Usage
 
-Run directly:
+### systemd service (recommended)
+
+The install script installs a systemd user service. Enable it to start automatically with your graphical session:
+
+```bash
+systemctl --user enable --now whisper-dictation.service
+```
+
+Manage it with:
+
+```bash
+systemctl --user start whisper-dictation    # start
+systemctl --user stop whisper-dictation     # stop
+systemctl --user restart whisper-dictation  # restart after config changes
+systemctl --user status whisper-dictation   # check status
+```
+
+### Run directly
 
 ```bash
 dictation
 ```
 
-Or add an i3 keybinding in `~/.config/i3/config`:
+### i3 keybinding
+
+Alternatively, add to `~/.config/i3/config`:
 
 ```
 bindsym $mod+d exec --no-startup-id ~/.local/bin/dictation
@@ -89,4 +110,10 @@ dictation --no-format              # skip LLM cleanup, raw Whisper output
 
 ### Logs
 
-Output is logged to `~/.local/share/whisper-dictation/dictation.log`.
+When running via systemd:
+
+```bash
+journalctl --user -u whisper-dictation -f
+```
+
+When running directly, output is logged to `~/.local/share/whisper-dictation/dictation.log`.

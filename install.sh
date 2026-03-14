@@ -4,8 +4,8 @@ set -euo pipefail
 DATA_DIR=~/.local/share/whisper-dictation
 VENV="$DATA_DIR/venv"
 MODEL_DIR="$DATA_DIR/models"
-MODEL_FILE="$MODEL_DIR/Llama-3.2-3B-Instruct-Q4_K_M.gguf"
-MODEL_URL="https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf"
+MODEL_FILE="$MODEL_DIR/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+MODEL_URL="https://huggingface.co/lmstudio-community/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "=== whisper-dictation installer ==="
@@ -55,7 +55,7 @@ echo "Installing NVIDIA CUDA runtime libraries..."
 
 # Download GGUF model
 if [ ! -f "$MODEL_FILE" ]; then
-    echo "Downloading LLaMA 3.2 3B Instruct GGUF model (~2 GB)..."
+    echo "Downloading Qwen 2.5 7B Instruct GGUF model (~4.4 GB)..."
     curl -L --progress-bar -o "$MODEL_FILE" "$MODEL_URL"
 else
     echo "Model already downloaded, skipping."
@@ -69,14 +69,20 @@ echo "Installing launcher to ~/.local/bin/dictation..."
 cp "$SCRIPT_DIR/dictation" ~/.local/bin/dictation
 chmod +x ~/.local/bin/dictation
 
+# Install systemd service
+echo "Installing systemd user service..."
+mkdir -p ~/.config/systemd/user
+cp "$SCRIPT_DIR/whisper-dictation.service" ~/.config/systemd/user/
+systemctl --user daemon-reload
+
 echo
 echo "=== Installation complete ==="
 echo
 echo "Make sure ~/.local/bin is in your PATH."
 echo
-echo "To add a push-to-talk keybinding in i3, add this to ~/.config/i3/config:"
+echo "To start and enable the service:"
 echo
-echo '  bindsym $mod+d exec --no-startup-id ~/.local/bin/dictation'
+echo "  systemctl --user enable --now whisper-dictation.service"
 echo
-echo "Then run: dictation"
+echo "Or run directly: dictation"
 echo "Hold the right Super key to record, release to transcribe and paste."
