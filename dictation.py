@@ -8,6 +8,7 @@ Model stays loaded in VRAM for instant responses.
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -149,7 +150,7 @@ class Dictation:
             t0 = time.time()
             self.llm = Llama(
                 model_path=format_model, n_gpu_layers=-1,
-                n_ctx=1024, verbose=False,
+                n_ctx=4096, verbose=False,
             )
             print(f"Format model loaded in {time.time() - t0:.1f}s")
 
@@ -237,7 +238,9 @@ class Dictation:
         try:
             out = self.llm(prompt, max_tokens=max(len(text) * 2, 200),
                            temperature=0, stop=["---", "Input:"])
-            result = out["choices"][0]["text"].strip()
+            result = out["choices"][0]["text"]
+            # Strip thinking tags from models that emit them (e.g. Qwen3.5)
+            result = re.sub(r"<think>.*?</think>", "", result, flags=re.DOTALL).strip()
             return result if result else text
         except Exception as e:
             print(f"(format error: {e})")
@@ -334,17 +337,22 @@ Examples:
     lang = None if args.language == "auto" else args.language
     trigger = parse_key(args.key)
 
-    # Auto-detect format model
+    # Auto-detect format model (prefer newer/smaller models first)
     fmt_model = None
     if not args.no_format:
         if args.format_model:
             fmt_model = args.format_model
         else:
-            default_path = os.path.expanduser(
-                "~/.local/share/whisper-dictation/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
-            )
-            if os.path.exists(default_path):
-                fmt_model = default_path
+            model_dir = os.path.expanduser("~/.local/share/whisper-dictation/models")
+            for name in [
+                "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+                "Qwen3.5-4B-Q4_K_M.gguf",
+                "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+            ]:
+                path = os.path.join(model_dir, name)
+                if os.path.exists(path):
+                    fmt_model = path
+                    break
 
     dictation = Dictation(args.model, lang, args.device, args.compute_type, fmt_model)
 
