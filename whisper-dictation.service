@@ -1,12 +1,18 @@
 [Unit]
 Description=Whisper Dictation (push-to-talk)
-After=graphical-session.target
-PartOf=graphical-session.target
+Wants=lmstudio-server.service
+After=lmstudio-server.service
 
 [Service]
-ExecStart=%h/.local/bin/dictation --key f8
-Restart=on-failure
+# The service starts from default.target, before i3/X11 reliably exports
+# DISPLAY into the user systemd manager. xclip/xdotool need these to paste.
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=%h/.Xauthority
+EnvironmentFile=%h/.config/whisper-dictation/env
+ExecStart=/bin/bash -lc 'exec "$HOME/.local/bin/dictation" $DICTATION_ARGS'
+Restart=always
 RestartSec=3
+SyslogIdentifier=whisper-dictation
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target

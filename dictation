@@ -1,6 +1,15 @@
 #!/bin/bash
 # Fast Whisper Dictation launcher
-# Kill any existing instance
+# Output goes to journald when run as a systemd service, to the terminal otherwise.
+# View service logs: journalctl --user -u whisper-dictation -f
+
+if [[ -z "$INVOCATION_ID" ]]; then
+    # Manual run: stop the systemd service cleanly first. With Restart=always,
+    # just pkill-ing it would make systemd respawn it and fight this instance.
+    systemctl --user stop whisper-dictation.service 2>/dev/null
+fi
+
+# Kill any stray instance
 pkill -f "dictation.py" 2>/dev/null
 sleep 1
 
@@ -9,7 +18,5 @@ PYVER=$("$VENV/bin/python3" -c 'import sys; print(f"{sys.version_info.major}.{sy
 SITE="$VENV/lib/python$PYVER/site-packages/nvidia"
 export LD_LIBRARY_PATH="$SITE/cublas/lib:$SITE/cudnn/lib:$SITE/cuda_runtime/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-LOG=~/.local/share/whisper-dictation/dictation.log
 exec "$VENV/bin/python3" -u \
-    ~/.local/share/whisper-dictation/dictation.py "$@" \
-    >> "$LOG" 2>&1
+    ~/.local/share/whisper-dictation/dictation.py "$@"
