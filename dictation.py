@@ -99,7 +99,7 @@ FEW_SHOT = [
 
 class Dictation:
     def __init__(self, model_size, language, device, compute_type,
-                 lm_url=None, lm_model=None):
+                 lm_url=None, lm_model=None, lm_reasoning_effort=None):
         print(f"Loading whisper model '{model_size}' on {device} ({compute_type})...")
         t0 = time.time()
         self.model = WhisperModel(
@@ -116,6 +116,7 @@ class Dictation:
 
         self.lm_url = lm_url.rstrip("/") if lm_url else None
         self.lm_model = lm_model
+        self.lm_reasoning_effort = lm_reasoning_effort
         if self.lm_url:
             print(f"Format via LM Studio: {lm_model} @ {self.lm_url}")
             threading.Thread(target=self._keepalive_loop, daemon=True).start()
@@ -218,13 +219,17 @@ class Dictation:
         return messages
 
     def _lm_request(self, messages, max_tokens, timeout):
-        body = json.dumps({
+        payload = {
             "model": self.lm_model,
             "messages": messages,
             "temperature": 0,
             "max_tokens": max_tokens,
             "chat_template_kwargs": {"enable_thinking": False},
-        }).encode("utf-8")
+        }
+        if self.lm_reasoning_effort:
+            # Qwen3.5+ ignore enable_thinking and need this to skip reasoning.
+            payload["reasoning_effort"] = self.lm_reasoning_effort
+        body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             f"{self.lm_url}/chat/completions",
             data=body,
@@ -383,6 +388,12 @@ Examples:
         "--lmstudio-model", default="qwen/qwen3-4b-2507",
         help="Model identifier to use for formatting (default: qwen/qwen3-4b-2507)",
     )
+    parser.add_argument(
+        "--lmstudio-reasoning-effort", default=None,
+        help="reasoning_effort sent with format requests. Use 'none' to "
+             "disable thinking on models like Qwen3.5 that ignore "
+             "enable_thinking (default: omit)",
+    )
     args = parser.parse_args()
 
     lang = None if args.language == "auto" else args.language
@@ -392,6 +403,7 @@ Examples:
     dictation = Dictation(
         args.model, lang, args.device, args.compute_type,
         lm_url=lm_url, lm_model=args.lmstudio_model,
+        lm_reasoning_effort=args.lmstudio_reasoning_effort,
     )
 
     keyboards = find_keyboards()
