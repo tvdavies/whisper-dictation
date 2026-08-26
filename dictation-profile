@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG="$HOME/.config/whisper-dictation/env"
+PROFILE="${1:-}"
+
+case "$PROFILE" in
+  gpu|gpu-qwen)
+    cat > "$CONFIG" <<'EOF'
+# Active whisper-dictation profile.
+# GPU + Qwen formatting:
+DICTATION_ARGS=--key super_r --model large-v3-turbo --device cuda --compute-type float16 --lmstudio-model qwen3.5-4b --lmstudio-reasoning-effort none
+
+# CPU + raw Whisper (previous lightweight setup):
+# DICTATION_ARGS=--key super_r --model tiny.en --device cpu --compute-type int8 --no-format
+EOF
+    ;;
+  cpu|cpu-raw)
+    cat > "$CONFIG" <<'EOF'
+# Active whisper-dictation profile.
+# GPU + Qwen formatting:
+# DICTATION_ARGS=--key super_r --model large-v3-turbo --device cuda --compute-type float16 --lmstudio-model qwen3.5-4b --lmstudio-reasoning-effort none
+
+# CPU + raw Whisper (previous lightweight setup):
+DICTATION_ARGS=--key super_r --model tiny.en --device cpu --compute-type int8 --no-format
+EOF
+    ;;
+  status)
+    grep '^DICTATION_ARGS=' "$CONFIG" || true
+    systemctl --user status whisper-dictation.service --no-pager
+    exit 0
+    ;;
+  *)
+    echo "Usage: dictation-profile {gpu|cpu|status}" >&2
+    exit 2
+    ;;
+esac
+
+systemctl --user daemon-reload
+systemctl --user restart whisper-dictation.service
+systemctl --user status whisper-dictation.service --no-pager

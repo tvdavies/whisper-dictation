@@ -69,6 +69,10 @@ echo "Installing launcher to ~/.local/bin/dictation..."
 cp "$SCRIPT_DIR/dictation" ~/.local/bin/dictation
 chmod +x ~/.local/bin/dictation
 
+echo "Installing profile switcher to ~/.local/bin/dictation-profile..."
+cp "$SCRIPT_DIR/dictation-profile" ~/.local/bin/dictation-profile
+chmod +x ~/.local/bin/dictation-profile
+
 # Install systemd service
 echo "Installing systemd user service..."
 mkdir -p ~/.config/systemd/user
