@@ -27,6 +27,10 @@ warnings.filterwarnings("ignore")
 
 SAMPLE_RATE = 16000
 
+# Ping LM Studio this often so the JIT-loaded format model never hits its
+# idle TTL (default 1h) and the few-shot prompt prefix stays cached.
+KEEPALIVE_INTERVAL = 600  # seconds
+
 SYSTEM_PROMPT = """You are a dictation formatter. Your job is to transform dictated transcript text into cleaned text.
 
 Critical rules:
@@ -114,6 +118,7 @@ class Dictation:
         self.lm_model = lm_model
         if self.lm_url:
             print(f"Format via LM Studio: {lm_model} @ {self.lm_url}")
+            threading.Thread(target=self._keepalive_loop, daemon=True).start()
 
         self.language = language
         self.recording = False
@@ -195,7 +200,8 @@ class Dictation:
         else:
             print("(no speech detected)")
 
-    def _format(self, text):
+    def _build_messages(self, text):
+        """Chat messages with the shared system + few-shot prefix."""
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         for inp, out in FEW_SHOT:
             messages.append({"role": "user", "content": inp})
@@ -209,23 +215,51 @@ class Dictation:
                 f"<transcript>\n{text}\n</transcript>"
             ),
         })
+        return messages
 
+    def _lm_request(self, messages, max_tokens, timeout):
         body = json.dumps({
             "model": self.lm_model,
             "messages": messages,
             "temperature": 0,
-            "max_tokens": max(len(text) * 2, 200),
+            "max_tokens": max_tokens,
             "chat_template_kwargs": {"enable_thinking": False},
         }).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.lm_url}/chat/completions",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.load(resp)
 
+    def _keepalive_loop(self):
+        """Keep the format model resident and its prompt prefix cached.
+
+        LM Studio JIT-unloads models after an idle TTL (default 1h), which
+        made the first dictation after a break pay a ~2.5s reload. A tiny
+        request on the same prefix resets the TTL and re-warms the cache.
+        """
+        while True:
+            time.sleep(KEEPALIVE_INTERVAL)
+            if self.recording:
+                continue
+            try:
+                self._lm_request(
+                    self._build_messages("ping"),
+                    max_tokens=1,
+                    timeout=120,
+                )
+            except Exception:
+                pass  # LM Studio down or restarting; retry next cycle
+
+    def _format(self, text):
         try:
-            req = urllib.request.Request(
-                f"{self.lm_url}/chat/completions",
-                data=body,
-                headers={"Content-Type": "application/json"},
+            data = self._lm_request(
+                self._build_messages(text),
+                max_tokens=max(len(text) * 2, 200),
+                timeout=30,
             )
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.load(resp)
             result = data["choices"][0]["message"]["content"]
             result = self._clean_format_result(result)
             return result if result else text
