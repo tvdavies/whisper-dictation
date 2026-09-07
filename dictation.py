@@ -137,6 +137,7 @@ class Dictation:
 
         self.language = language
         self.recording = False
+        self._notif_id = None
         self.audio_chunks = []
         self.stream = None
         self._lock = threading.Lock()
@@ -154,12 +155,39 @@ class Dictation:
                 callback=self._audio_callback,
             )
             self.stream.start()
-        # Subtle notification
+        # Recording indicator. Keep the daemon-assigned ID so the popup can
+        # be dismissed the moment recording stops — noctalia keeps popups on
+        # screen past their expire timeout, so we manage the lifetime.
+        threading.Thread(target=self._show_recording_notification, daemon=True).start()
+        print("\033[91m● REC\033[0m", end=" ", flush=True)
+
+    def _show_recording_notification(self):
+        try:
+            out = subprocess.run(
+                ["notify-send", "-p", "-u", "low", "Dictation", "Recording..."],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=2,
+            )
+            notif_id = out.stdout.decode().strip()
+            self._notif_id = notif_id if notif_id.isdigit() else None
+        except Exception:
+            self._notif_id = None
+            return
+        # The key may already have been released during the D-Bus roundtrip.
+        if not self.recording:
+            self._close_recording_notification()
+
+    def _close_recording_notification(self):
+        notif_id, self._notif_id = self._notif_id, None
+        if not notif_id:
+            return
         subprocess.Popen(
-            ["notify-send", "-t", "800", "-u", "low", "Dictation", "Recording..."],
+            ["gdbus", "call", "--session",
+             "--dest", "org.freedesktop.Notifications",
+             "--object-path", "/org/freedesktop/Notifications",
+             "--method", "org.freedesktop.Notifications.CloseNotification",
+             notif_id],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        print("\033[91m● REC\033[0m", end=" ", flush=True)
 
     def _audio_callback(self, indata, frames, time_info, status):
         if self.recording:
@@ -176,6 +204,8 @@ class Dictation:
                 self.stream = None
             chunks = self.audio_chunks
             self.audio_chunks = []
+
+        self._close_recording_notification()
 
         if not chunks:
             print("(empty)")
