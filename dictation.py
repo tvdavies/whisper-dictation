@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Fast Whisper Dictation — push-to-talk for Linux/X11.
+Fast Whisper Dictation — push-to-talk for Linux (X11 and Wayland).
 
 Hold the trigger key to record, release to transcribe and paste.
 Model stays resident in memory for instant responses.
 """
 
 import argparse
+import glob
 import json
+import os
 import re
 import subprocess
 import sys
@@ -310,7 +312,56 @@ class Dictation:
         result = re.sub(r"(?i)^output:\s*", "", result).strip()
         return result
 
+    @staticmethod
+    def _wayland_env():
+        """Resolve the Wayland socket, or return None when not on Wayland.
+
+        The daemon starts from systemd at boot, before the compositor has
+        exported WAYLAND_DISPLAY into the user manager, so the inherited
+        environment cannot be trusted; probe the runtime dir instead.
+        """
+        env = os.environ.copy()
+        runtime_dir = env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+        if not env.get("WAYLAND_DISPLAY"):
+            sockets = sorted(
+                s
+                for s in glob.glob(os.path.join(runtime_dir, "wayland-*"))
+                if not s.endswith(".lock")
+            )
+            if not sockets:
+                return None
+            env["WAYLAND_DISPLAY"] = os.path.basename(sockets[0])
+        env.setdefault("XDG_RUNTIME_DIR", runtime_dir)
+        return env
+
     def _paste(self, text):
+        wayland_env = self._wayland_env()
+        if wayland_env is not None:
+            self._paste_wayland(text, wayland_env)
+        else:
+            self._paste_x11(text)
+
+    @staticmethod
+    def _paste_wayland(text, env):
+        # Copy to clipboard
+        proc = subprocess.Popen(["wl-copy"], stdin=subprocess.PIPE, env=env)
+        proc.communicate(text.encode("utf-8"))
+
+        # wl-copy forks a background process to serve the selection; give it
+        # a moment to take ownership before pasting.
+        time.sleep(0.05)
+
+        # Ctrl+Shift+V works universally (see _paste_x11). wtype speaks the
+        # virtual-keyboard protocol, so it reaches native Wayland and
+        # XWayland windows alike.
+        subprocess.run(
+            ["wtype", "-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=env,
+        )
+
+    @staticmethod
+    def _paste_x11(text):
         # Copy to clipboard
         proc = subprocess.Popen(
             ["xclip", "-selection", "clipboard"],
