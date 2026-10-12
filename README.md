@@ -96,6 +96,10 @@ bindsym $mod+d exec --no-startup-id ~/.local/bin/dictation
                     Options: super_r, caps_lock, f8, pause, etc.
 --no-format         Disable LLM formatting (raw Whisper output)
 --format-model PATH Path to a custom GGUF model for formatting
+--sal-voice CMD     Run `CMD hold press` / `CMD hold release` around each
+                    recording so a live Sal voice call is muted while you
+                    dictate. 'auto' (default) finds sal-voice on PATH or in
+                    ~/.local/bin; 'none' disables
 ```
 
 ### Examples

@@ -11,6 +11,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -113,7 +114,8 @@ FEW_SHOT = [
 
 class Dictation:
     def __init__(self, model_size, language, device, compute_type,
-                 lm_url=None, lm_model=None, lm_reasoning_effort=None):
+                 lm_url=None, lm_model=None, lm_reasoning_effort=None,
+                 sal_voice=None):
         print(f"Loading whisper model '{model_size}' on {device} ({compute_type})...")
         t0 = time.time()
         self.model = WhisperModel(
@@ -135,6 +137,10 @@ class Dictation:
             print(f"Format via LM Studio: {lm_model} @ {self.lm_url}")
             threading.Thread(target=self._keepalive_loop, daemon=True).start()
 
+        self.sal_voice = sal_voice
+        if sal_voice:
+            print(f"Muting Sal voice calls while recording via {sal_voice}")
+
         self.language = language
         self.recording = False
         self._notif_id = None
@@ -147,6 +153,8 @@ class Dictation:
             if self.recording:
                 return
             self.recording = True
+            # Mute any live Sal call first, so the agent hears none of this.
+            self._sal_hold("press")
             self.audio_chunks = []
             self.stream = sd.InputStream(
                 samplerate=SAMPLE_RATE,
@@ -189,6 +197,25 @@ class Dictation:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
 
+    def _sal_hold(self, action):
+        """Fire-and-forget `sal-voice hold press|release`.
+
+        It mutes the live Sal voice call's microphone for the duration of the
+        hold and restores the previous mute state on release. It is a no-op
+        when no call is live, never prints, and orders press/release by a
+        microsecond clock, so we don't wait for it.
+        """
+        if not self.sal_voice:
+            return
+        try:
+            subprocess.Popen(
+                [self.sal_voice, "hold", action],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, start_new_session=True,
+            )
+        except OSError as e:
+            print(f"sal-voice hold {action} failed: {e}")
+
     def _audio_callback(self, indata, frames, time_info, status):
         if self.recording:
             self.audio_chunks.append(indata.copy())
@@ -204,6 +231,7 @@ class Dictation:
                 self.stream = None
             chunks = self.audio_chunks
             self.audio_chunks = []
+            self._sal_hold("release")
 
         self._close_recording_notification()
 
@@ -495,7 +523,22 @@ Examples:
              "disable thinking on models like Qwen3.5 that ignore "
              "enable_thinking (default: omit)",
     )
+    parser.add_argument(
+        "--sal-voice", default="auto",
+        help="sal-voice command run with 'hold press/release' while recording, "
+             "to mute a live Sal call. 'auto' finds it on PATH or in "
+             "~/.local/bin; 'none' disables (default: auto)",
+    )
     args = parser.parse_args()
+
+    sal_voice = args.sal_voice
+    if sal_voice == "none":
+        sal_voice = None
+    elif sal_voice == "auto":
+        sal_voice = shutil.which("sal-voice")
+        fallback = os.path.expanduser("~/.local/bin/sal-voice")
+        if not sal_voice and os.access(fallback, os.X_OK):
+            sal_voice = fallback
 
     lang = None if args.language == "auto" else args.language
     trigger = parse_key(args.key)
@@ -505,6 +548,7 @@ Examples:
         args.model, lang, args.device, args.compute_type,
         lm_url=lm_url, lm_model=args.lmstudio_model,
         lm_reasoning_effort=args.lmstudio_reasoning_effort,
+        sal_voice=sal_voice,
     )
 
     keyboards = find_keyboards()
