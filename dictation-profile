@@ -4,34 +4,43 @@ set -euo pipefail
 CONFIG="$HOME/.config/whisper-dictation/env"
 PROFILE="${1:-}"
 
+PARAKEET_ARGS="--key super_r --engine parakeet --device cuda --lmstudio-model qwen3.5-4b --lmstudio-reasoning-effort none"
+GPU_ARGS="--key super_r --model large-v3-turbo --device cuda --compute-type float16 --lmstudio-model qwen3.5-4b --lmstudio-reasoning-effort none"
+CPU_ARGS="--key super_r --model tiny.en --device cpu --compute-type int8 --no-format"
+
+# Write the env file with only the chosen profile's line uncommented.
+write_config() {
+  local active="$1" p g c
+  p="# "; g="# "; c="# "
+  case "$active" in
+    parakeet) p="" ;;
+    gpu) g="" ;;
+    cpu) c="" ;;
+  esac
+  cat > "$CONFIG" <<EOF
+# Active whisper-dictation profile (switch with: dictation-profile {parakeet|gpu|cpu}).
+# GPU Parakeet TDT 0.6B v2 + Qwen formatting:
+${p}DICTATION_ARGS=$PARAKEET_ARGS
+
+# GPU Whisper large-v3-turbo + Qwen formatting:
+${g}DICTATION_ARGS=$GPU_ARGS
+
+# CPU + raw Whisper (lightweight):
+${c}DICTATION_ARGS=$CPU_ARGS
+EOF
+}
+
 case "$PROFILE" in
-  gpu|gpu-qwen)
-    cat > "$CONFIG" <<'EOF'
-# Active whisper-dictation profile.
-# GPU + Qwen formatting:
-DICTATION_ARGS=--key super_r --model large-v3-turbo --device cuda --compute-type float16 --lmstudio-model qwen3.5-4b --lmstudio-reasoning-effort none
-
-# CPU + raw Whisper (previous lightweight setup):
-# DICTATION_ARGS=--key super_r --model tiny.en --device cpu --compute-type int8 --no-format
-EOF
-    ;;
-  cpu|cpu-raw)
-    cat > "$CONFIG" <<'EOF'
-# Active whisper-dictation profile.
-# GPU + Qwen formatting:
-# DICTATION_ARGS=--key super_r --model large-v3-turbo --device cuda --compute-type float16 --lmstudio-model qwen3.5-4b --lmstudio-reasoning-effort none
-
-# CPU + raw Whisper (previous lightweight setup):
-DICTATION_ARGS=--key super_r --model tiny.en --device cpu --compute-type int8 --no-format
-EOF
-    ;;
+  parakeet) write_config parakeet ;;
+  gpu|gpu-qwen|whisper) write_config gpu ;;
+  cpu|cpu-raw) write_config cpu ;;
   status)
     grep '^DICTATION_ARGS=' "$CONFIG" || true
     systemctl --user status whisper-dictation.service --no-pager
     exit 0
     ;;
   *)
-    echo "Usage: dictation-profile {gpu|cpu|status}" >&2
+    echo "Usage: dictation-profile {parakeet|gpu|cpu|status}" >&2
     exit 2
     ;;
 esac

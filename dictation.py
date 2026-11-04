@@ -25,11 +25,70 @@ import evdev.ecodes as ecodes
 import numpy as np
 import select
 import sounddevice as sd
-from faster_whisper import WhisperModel
 
 warnings.filterwarnings("ignore")
 
 SAMPLE_RATE = 16000
+
+DEFAULT_PARAKEET_MODEL = os.path.expanduser(
+    "~/.local/share/whisper-dictation/models/parakeet-tdt-0.6b-v2"
+)
+
+
+class WhisperEngine:
+    """faster-whisper (CTranslate2) speech-to-text."""
+
+    name = "whisper"
+
+    def __init__(self, model, language, device, compute_type):
+        from faster_whisper import WhisperModel
+
+        print(f"Loading whisper model '{model}' on {device} ({compute_type})...")
+        self.language = language
+        self.model = WhisperModel(
+            model, device=device, compute_type=compute_type, cpu_threads=16,
+        )
+
+    def transcribe(self, audio):
+        segments, _info = self.model.transcribe(
+            audio,
+            language=self.language,
+            beam_size=1,
+            condition_on_previous_text=False,
+            vad_filter=True,
+            vad_parameters=dict(
+                min_silence_duration_ms=500,
+                speech_pad_ms=200,
+            ),
+        )
+        return " ".join(seg.text.strip() for seg in segments)
+
+
+class ParakeetEngine:
+    """NVIDIA Parakeet TDT via onnx-asr (the model family Hex uses).
+
+    English-only (v2) or multilingual (v3); punctuates and capitalises itself.
+    The model directory must hold real files, not Hugging Face cache symlinks:
+    onnxruntime refuses external weights that resolve outside the model dir.
+    """
+
+    name = "parakeet"
+
+    def __init__(self, model_dir, device):
+        import onnx_asr
+        import onnxruntime as ort
+
+        ort.set_default_logger_severity(3)  # silence Memcpy-node warnings
+        providers = ["CPUExecutionProvider"]
+        if device == "cuda":
+            providers.insert(0, "CUDAExecutionProvider")
+        print(f"Loading parakeet model '{model_dir}' on {device}...")
+        self.model = onnx_asr.load_model(
+            "nemo-parakeet-tdt-0.6b-v2", model_dir, providers=providers,
+        )
+
+    def transcribe(self, audio):
+        return self.model.recognize(audio, sample_rate=SAMPLE_RATE).strip()
 
 # Ping LM Studio this often so the JIT-loaded format model never hits its
 # idle TTL (default 1h) and the few-shot prompt prefix stays cached.
@@ -118,21 +177,16 @@ FEW_SHOT = [
 
 
 class Dictation:
-    def __init__(self, model_size, language, device, compute_type,
+    def __init__(self, engine, language,
                  lm_url=None, lm_model=None, lm_reasoning_effort=None,
                  sal_voice=None):
-        print(f"Loading whisper model '{model_size}' on {device} ({compute_type})...")
         t0 = time.time()
-        self.model = WhisperModel(
-            model_size, device=device, compute_type=compute_type,
-            cpu_threads=16,
-        )
-        print(f"Whisper model loaded in {time.time() - t0:.1f}s")
+        self.engine = engine()
+        print(f"{self.engine.name.capitalize()} model loaded in {time.time() - t0:.1f}s")
 
         # Warm up: first transcription pays graph-compilation cost; eat it now.
         t0 = time.time()
-        warmup_audio = np.zeros(SAMPLE_RATE, dtype=np.float32)
-        list(self.model.transcribe(warmup_audio, language=language or "en", beam_size=1)[0])
+        self.engine.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32))
         print(f"Warmup transcription in {time.time() - t0:.1f}s")
 
         self.lm_url = lm_url.rstrip("/") if lm_url else None
@@ -149,6 +203,9 @@ class Dictation:
         self.language = language
         self.recording = False
         self._notif_id = None
+        # Serialises notify-send calls so a hands-free update can't race the
+        # initial "Recording..." popup for the notification ID.
+        self._notif_lock = threading.Lock()
         self.audio_chunks = []
         self.stream = None
         self._lock = threading.Lock()
@@ -174,17 +231,34 @@ class Dictation:
         threading.Thread(target=self._show_recording_notification, daemon=True).start()
         print("\033[91m● REC\033[0m", end=" ", flush=True)
 
-    def _show_recording_notification(self):
-        try:
-            out = subprocess.run(
-                ["notify-send", "-p", "-u", "low", "Dictation", "Recording..."],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=2,
-            )
-            notif_id = out.stdout.decode().strip()
-            self._notif_id = notif_id if notif_id.isdigit() else None
-        except Exception:
-            self._notif_id = None
+    def latch(self):
+        """Recording continues hands-free until the next double tap."""
+        if not self.recording:
             return
+        threading.Thread(
+            target=self._show_recording_notification,
+            args=("Recording hands-free... double-tap to stop",),
+            daemon=True,
+        ).start()
+        print("(hands-free)", end=" ", flush=True)
+
+    def _show_recording_notification(self, body="Recording..."):
+        with self._notif_lock:
+            if not self.recording:
+                return
+            cmd = ["notify-send", "-p", "-u", "low"]
+            if self._notif_id:
+                cmd += ["-r", self._notif_id]  # update the popup in place
+            try:
+                out = subprocess.run(
+                    cmd + ["Dictation", body],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=2,
+                )
+                notif_id = out.stdout.decode().strip()
+                self._notif_id = notif_id if notif_id.isdigit() else None
+            except Exception:
+                self._notif_id = None
+                return
         # The key may already have been released during the D-Bus roundtrip.
         if not self.recording:
             self._close_recording_notification()
@@ -225,10 +299,11 @@ class Dictation:
         if self.recording:
             self.audio_chunks.append(indata.copy())
 
-    def stop_and_transcribe(self):
+    def _end_recording(self):
+        """Stop the microphone and return the recorded chunks (None if idle)."""
         with self._lock:
             if not self.recording:
-                return
+                return None
             self.recording = False
             if self.stream:
                 self.stream.stop()
@@ -237,9 +312,18 @@ class Dictation:
             chunks = self.audio_chunks
             self.audio_chunks = []
             self._sal_hold("release")
-
         self._close_recording_notification()
+        return chunks
 
+    def cancel_recording(self):
+        """Discard the recording, e.g. a lone tap that never became a double tap."""
+        if self._end_recording() is not None:
+            print("(tap, discarded)")
+
+    def stop_and_transcribe(self):
+        chunks = self._end_recording()
+        if chunks is None:
+            return
         if not chunks:
             print("(empty)")
             return
@@ -252,18 +336,7 @@ class Dictation:
             return
 
         t0 = time.time()
-        segments, info = self.model.transcribe(
-            audio,
-            language=self.language,
-            beam_size=1,
-            condition_on_previous_text=False,
-            vad_filter=True,
-            vad_parameters=dict(
-                min_silence_duration_ms=500,
-                speech_pad_ms=200,
-            ),
-        )
-        text = " ".join(seg.text.strip() for seg in segments)
+        text = self.engine.transcribe(audio)
         elapsed = time.time() - t0
 
         if text:
@@ -272,7 +345,7 @@ class Dictation:
                 t1 = time.time()
                 text = self._format(text)
                 fmt_elapsed = time.time() - t1
-                print(f"\033[92m✓\033[0m [{elapsed:.2f}s whisper + {fmt_elapsed:.2f}s fmt / {duration:.1f}s audio] {text}")
+                print(f"\033[92m✓\033[0m [{elapsed:.2f}s {self.engine.name} + {fmt_elapsed:.2f}s fmt / {duration:.1f}s audio] {text}")
                 if text != raw:
                     print(f"  raw: {raw}")
             else:
@@ -465,6 +538,85 @@ class Dictation:
         )
 
 
+class PushToTalk:
+    """Trigger-key state machine: hold to talk, or double-tap to toggle.
+
+    Hold: recording runs while the key is down; release transcribes.
+    Double tap: two quick taps latch recording on hands-free; another double
+    tap stops and transcribes. A lone quick tap is discarded. A press that
+    chords with another key (Ctrl+C on the trigger) is never a tap.
+
+    Recording starts on the first press so a hold never loses its opening
+    words; a tap only decides afterwards whether that audio is kept.
+    """
+
+    TAP_MAX_HOLD = 0.3     # seconds; a shorter press is a tap
+    DOUBLE_TAP_GAP = 0.35  # seconds from a tap's release to the next press
+
+    def __init__(self, dictation):
+        self.dictation = dictation
+        self.state = "idle"
+        self.down_at = 0.0
+        self.chorded = False
+        self.deadline = None  # when a pending first tap expires
+
+    def _tap(self, now):
+        return not self.chorded and now - self.down_at < self.TAP_MAX_HOLD
+
+    def key_down(self, now):
+        self.down_at, self.chorded = now, False
+        if self.state == "idle":
+            self.dictation.start_recording()
+            self.state = "held"
+        elif self.state == "tap1":  # second tap: latch on
+            self.deadline = None
+            self.dictation.latch()
+            self.state = "latching"
+        elif self.state == "latched":
+            self.state = "latched_down"
+        elif self.state == "latched_tap1":  # second tap: latch off
+            self.deadline = None
+            self._transcribe()
+            self.state = "stopping"
+
+    def key_up(self, now):
+        if self.state == "held":
+            if self._tap(now):
+                self.state, self.deadline = "tap1", now + self.DOUBLE_TAP_GAP
+            else:
+                self._transcribe()
+                self.state = "idle"
+        elif self.state == "latching":
+            self.state = "latched"
+        elif self.state == "latched_down":
+            if self._tap(now):
+                self.state, self.deadline = "latched_tap1", now + self.DOUBLE_TAP_GAP
+            else:
+                self.state = "latched"
+        elif self.state == "stopping":
+            self.state = "idle"
+
+    def other_key_down(self):
+        self.chorded = True
+        if self.state == "tap1":  # tapped the trigger, then typed: not a double tap
+            self._expire()
+
+    def poll(self, now):
+        if self.deadline is not None and now >= self.deadline:
+            self._expire()
+
+    def _expire(self):
+        self.deadline = None
+        if self.state == "tap1":
+            self.dictation.cancel_recording()
+            self.state = "idle"
+        elif self.state == "latched_tap1":
+            self.state = "latched"
+
+    def _transcribe(self):
+        threading.Thread(target=self.dictation.stop_and_transcribe, daemon=True).start()
+
+
 def parse_key(key_name):
     """Map a user-friendly key name to an evdev keycode."""
     key_map = {
@@ -514,6 +666,15 @@ Examples:
   %(prog)s --key f8                 # use F8 as trigger
   %(prog)s --language auto          # auto-detect language (not recommended with distil)
 """,
+    )
+    parser.add_argument(
+        "--engine", default="whisper", choices=["whisper", "parakeet"],
+        help="Speech-to-text engine (default: whisper). parakeet uses NVIDIA "
+             "Parakeet TDT via onnx-asr; --model/--compute-type then don't apply",
+    )
+    parser.add_argument(
+        "--parakeet-model", default=DEFAULT_PARAKEET_MODEL,
+        help=f"Parakeet ONNX model directory (default: {DEFAULT_PARAKEET_MODEL})",
     )
     parser.add_argument(
         "--model", default="tiny.en",
@@ -569,8 +730,12 @@ Examples:
     trigger = parse_key(args.key)
 
     lm_url = None if args.no_format else args.lmstudio_url
+    if args.engine == "parakeet":
+        engine = lambda: ParakeetEngine(args.parakeet_model, args.device)
+    else:
+        engine = lambda: WhisperEngine(args.model, lang, args.device, args.compute_type)
     dictation = Dictation(
-        args.model, lang, args.device, args.compute_type,
+        engine, lang,
         lm_url=lm_url, lm_model=args.lmstudio_model,
         lm_reasoning_effort=args.lmstudio_reasoning_effort,
         sal_voice=sal_voice,
@@ -582,11 +747,17 @@ Examples:
         sys.exit(1)
     print(f"Monitoring {len(keyboards)} input device(s)")
     print(f"\nReady! Hold [{args.key}] to record, release to transcribe.")
+    print(f"Or double-tap [{args.key}] to record hands-free; double-tap again to transcribe.")
     print("Press Ctrl+C to quit.\n")
 
+    ptt = PushToTalk(dictation)
     try:
         while True:
-            r, _, _ = select.select(keyboards, [], [])
+            timeout = None
+            if ptt.deadline is not None:
+                timeout = max(0.0, ptt.deadline - time.monotonic())
+            r, _, _ = select.select(keyboards, [], [], timeout)
+            ptt.poll(time.monotonic())
             for dev in r:
                 try:
                     events = dev.read()
@@ -603,14 +774,16 @@ Examples:
                     continue
 
                 for event in events:
-                    if event.type != ecodes.EV_KEY or event.code != trigger:
+                    if event.type != ecodes.EV_KEY:
                         continue
-                    if event.value == 1:  # key down
-                        dictation.start_recording()
+                    now = time.monotonic()
+                    if event.code != trigger:
+                        if event.value == 1:
+                            ptt.other_key_down()
+                    elif event.value == 1:  # key down (2 = autorepeat, ignored)
+                        ptt.key_down(now)
                     elif event.value == 0:  # key up
-                        threading.Thread(
-                            target=dictation.stop_and_transcribe, daemon=True
-                        ).start()
+                        ptt.key_up(now)
     except KeyboardInterrupt:
         print("\nBye!")
 
