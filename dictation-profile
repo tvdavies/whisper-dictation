@@ -45,6 +45,9 @@ case "$PROFILE" in
     ;;
 esac
 
+# install.sh writes the first profile before the service is enabled.
+[ -n "${DICTATION_PROFILE_NO_RESTART:-}" ] && exit 0
+
 systemctl --user daemon-reload
 systemctl --user restart whisper-dictation.service
 systemctl --user status whisper-dictation.service --no-pager

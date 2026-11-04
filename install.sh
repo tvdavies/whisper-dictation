@@ -4,38 +4,49 @@ set -euo pipefail
 DATA_DIR=~/.local/share/whisper-dictation
 VENV="$DATA_DIR/venv"
 MODEL_DIR="$DATA_DIR/models"
-MODEL_FILE="$MODEL_DIR/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
-MODEL_URL="https://huggingface.co/lmstudio-community/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
 PARAKEET_DIR="$MODEL_DIR/parakeet-tdt-0.6b-v2"
 PARAKEET_REPO="istupakov/parakeet-tdt-0.6b-v2-onnx"
+CONFIG_DIR=~/.config/whisper-dictation
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "=== whisper-dictation installer ==="
 echo
 
-# Check system dependencies
+# Check system dependencies. Pasting uses wl-copy + wtype on Wayland and
+# xclip + xdotool on X11; gdbus dismisses the recording notification.
 MISSING=()
-command -v xclip   >/dev/null || MISSING+=(xclip)
-command -v xdotool >/dev/null || MISSING+=(xdotool)
-command -v notify-send >/dev/null || MISSING+=(libnotify)
+need() { command -v "$1" >/dev/null || MISSING+=("$2"); }
+if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    need wl-copy wl-clipboard
+    need wtype wtype
+else
+    need xclip xclip
+    need xdotool xdotool
+fi
+need notify-send libnotify
+need gdbus glib2
 pkg-config --exists portaudio-2.0 2>/dev/null || MISSING+=(portaudio)
 
 if [ ${#MISSING[@]} -gt 0 ]; then
-    echo "Missing system dependencies: ${MISSING[*]}"
-    echo "Install them with your package manager, e.g.:"
-    echo "  sudo pacman -S ${MISSING[*]}    # Arch"
-    echo "  sudo apt install ${MISSING[*]}  # Debian/Ubuntu"
+    echo "Missing system dependencies (Arch package names): ${MISSING[*]}"
+    echo "  sudo pacman -S ${MISSING[*]}"
+    echo "On Debian/Ubuntu, libnotify is libnotify-bin, glib2 is libglib2.0-bin"
+    echo "and portaudio is portaudio19-dev."
     echo
     read -rp "Continue anyway? [y/N] " ans
     [[ "$ans" =~ ^[Yy] ]] || exit 1
 fi
 
-# Create directories
-echo "Creating directories..."
-mkdir -p "$MODEL_DIR"
-mkdir -p ~/.local/bin
+# The trigger key is read straight from /dev/input, which needs the input group.
+if ! id -nG | tr ' ' '\n' | grep -qx input; then
+    echo "Warning: you are not in the 'input' group, so the trigger key can't be read."
+    echo "  sudo usermod -aG input \"$USER\"   # then log out and back in"
+    echo
+fi
 
-# Create venv
+echo "Creating directories..."
+mkdir -p "$MODEL_DIR" "$CONFIG_DIR" ~/.local/bin ~/.config/systemd/user
+
 if [ ! -d "$VENV" ]; then
     echo "Creating Python venv..."
     python3 -m venv "$VENV"
@@ -47,11 +58,7 @@ echo "Installing Python dependencies..."
 "$VENV/bin/pip" install --upgrade pip
 "$VENV/bin/pip" install -r "$SCRIPT_DIR/requirements.txt"
 
-# Install llama-cpp-python with CUDA support
-echo "Installing llama-cpp-python with CUDA backend..."
-CMAKE_ARGS="-DGGML_CUDA=on" "$VENV/bin/pip" install llama-cpp-python==0.3.16 --force-reinstall --no-cache-dir
-
-# Install NVIDIA CUDA pip packages for LD_LIBRARY_PATH
+# CUDA libraries for both engines; the launcher puts them on LD_LIBRARY_PATH.
 echo "Installing NVIDIA CUDA runtime libraries..."
 "$VENV/bin/pip" install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12
 
@@ -79,43 +86,40 @@ else
     echo "Parakeet model already downloaded, skipping."
 fi
 
-# Download GGUF model
-if [ ! -f "$MODEL_FILE" ]; then
-    echo "Downloading Qwen 2.5 7B Instruct GGUF model (~4.4 GB)..."
-    curl -L --progress-bar -o "$MODEL_FILE" "$MODEL_URL"
-else
-    echo "Model already downloaded, skipping."
-fi
-
-# Install files
-echo "Installing dictation.py..."
-cp "$SCRIPT_DIR/dictation.py" "$DATA_DIR/dictation.py"
-
-echo "Installing launcher to ~/.local/bin/dictation..."
-cp "$SCRIPT_DIR/dictation" ~/.local/bin/dictation
-chmod +x ~/.local/bin/dictation
-
-echo "Installing profile switcher to ~/.local/bin/dictation-profile..."
-cp "$SCRIPT_DIR/dictation-profile" ~/.local/bin/dictation-profile
-chmod +x ~/.local/bin/dictation-profile
-
-# Install systemd service
-echo "Installing systemd user service..."
-mkdir -p ~/.config/systemd/user
-cp "$SCRIPT_DIR/whisper-dictation.service" ~/.config/systemd/user/
+# Link rather than copy, so a `git pull` in this checkout updates the install
+# and re-running this script over an existing install is safe. ln -sfn also
+# replaces regular files left by older versions of this script.
+echo "Linking dictation.py, launcher, profile switcher and systemd service..."
+ln -sfn "$SCRIPT_DIR/dictation.py" "$DATA_DIR/dictation.py"
+ln -sfn "$SCRIPT_DIR/dictation" ~/.local/bin/dictation
+ln -sfn "$SCRIPT_DIR/dictation-profile" ~/.local/bin/dictation-profile
+ln -sfn "$SCRIPT_DIR/whisper-dictation.service" ~/.config/systemd/user/whisper-dictation.service
+chmod +x "$SCRIPT_DIR/dictation" "$SCRIPT_DIR/dictation-profile"
 systemctl --user daemon-reload
+
+# The service reads its arguments from the env file; start on Parakeet.
+if [ ! -f "$CONFIG_DIR/env" ]; then
+    echo "Writing the default (parakeet) profile to $CONFIG_DIR/env..."
+    DICTATION_PROFILE_NO_RESTART=1 "$SCRIPT_DIR/dictation-profile" parakeet
+else
+    echo "Keeping the existing profile in $CONFIG_DIR/env."
+fi
 
 echo
 echo "=== Installation complete ==="
 echo
+echo "Keep this checkout: the installed files are symlinks into it."
 echo "Make sure ~/.local/bin is in your PATH."
 echo
 echo "To start and enable the service:"
 echo
 echo "  systemctl --user enable --now whisper-dictation.service"
 echo
-echo "Or run directly: dictation"
-echo "Hold the right Super key to record, release to transcribe and paste."
-echo "Or double-tap it to record hands-free, and double-tap again to transcribe."
+echo "Or run directly: dictation \$(grep '^DICTATION_ARGS=' $CONFIG_DIR/env | cut -d= -f2-)"
 echo
-echo "To use Parakeet instead of Whisper: dictation-profile parakeet"
+echo "Hold the right Ctrl key to record, release to transcribe and paste."
+echo "Or double-tap it to record hands-free, and double-tap again to transcribe."
+echo "Switch engines with: dictation-profile {parakeet|gpu|cpu}"
+echo
+echo "Formatting (punctuation, self-corrections, lists) uses a model served by"
+echo "LM Studio at http://localhost:1234. Without it, raw transcripts are pasted."

@@ -1,6 +1,6 @@
 faster-whisper==1.2.1
 sounddevice==0.5.5
-pynput==1.8.1
+evdev==1.9.3
 numpy==2.4.2
 # Parakeet engine (--engine parakeet). onnxruntime-gpu replaces the CPU
 # onnxruntime that faster-whisper pulls in (same module); uninstall that first.

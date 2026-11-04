@@ -659,8 +659,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
-  %(prog)s                          # defaults: distil-large-v3 on CPU int8, English, right Super key
-  %(prog)s --model large-v3-turbo --device cuda --compute-type float16  # GPU mode
+  %(prog)s                          # defaults: Whisper tiny.en on CPU int8, English, right Ctrl key
+  %(prog)s --engine parakeet --device cuda  # Parakeet TDT 0.6B v2 on the GPU
+  %(prog)s --model large-v3-turbo --device cuda --compute-type float16  # GPU Whisper
   %(prog)s --model base.en          # lighter, faster, lower accuracy
   %(prog)s --key caps_lock          # use Caps Lock as trigger
   %(prog)s --key f8                 # use F8 as trigger
