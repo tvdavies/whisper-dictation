@@ -6,6 +6,8 @@ VENV="$DATA_DIR/venv"
 MODEL_DIR="$DATA_DIR/models"
 MODEL_FILE="$MODEL_DIR/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
 MODEL_URL="https://huggingface.co/lmstudio-community/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+PARAKEET_DIR="$MODEL_DIR/parakeet-tdt-0.6b-v2"
+PARAKEET_REPO="istupakov/parakeet-tdt-0.6b-v2-onnx"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "=== whisper-dictation installer ==="
@@ -53,6 +55,30 @@ CMAKE_ARGS="-DGGML_CUDA=on" "$VENV/bin/pip" install llama-cpp-python==0.3.16 --f
 echo "Installing NVIDIA CUDA runtime libraries..."
 "$VENV/bin/pip" install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12
 
+# Parakeet engine (--engine parakeet) runs on onnxruntime-gpu. faster-whisper
+# pulls in the CPU onnxruntime, which provides the same module and shadows the
+# GPU build, so remove it and reinstall the GPU build over the top.
+echo "Switching onnxruntime to the CUDA build for Parakeet..."
+ONNXRUNTIME_GPU=$(grep -E '^onnxruntime-gpu==' "$SCRIPT_DIR/requirements.txt")
+"$VENV/bin/pip" uninstall -y onnxruntime || true
+"$VENV/bin/pip" install --force-reinstall --no-deps "$ONNXRUNTIME_GPU"
+
+# Download the Parakeet model into a plain directory. Not the Hugging Face
+# cache: its weights are symlinks into a blobs dir, and onnxruntime refuses
+# external weights that resolve outside the model directory.
+if [ ! -f "$PARAKEET_DIR/encoder-model.onnx.data" ]; then
+    echo "Downloading Parakeet TDT 0.6B v2 ONNX model (~2.5 GB)..."
+    "$VENV/bin/python3" - "$PARAKEET_REPO" "$PARAKEET_DIR" <<'PY'
+import sys
+from huggingface_hub import snapshot_download
+
+# The int8 files are a quantised variant the engine doesn't load.
+snapshot_download(sys.argv[1], local_dir=sys.argv[2], ignore_patterns=["*.int8.onnx"])
+PY
+else
+    echo "Parakeet model already downloaded, skipping."
+fi
+
 # Download GGUF model
 if [ ! -f "$MODEL_FILE" ]; then
     echo "Downloading Qwen 2.5 7B Instruct GGUF model (~4.4 GB)..."
@@ -90,3 +116,6 @@ echo "  systemctl --user enable --now whisper-dictation.service"
 echo
 echo "Or run directly: dictation"
 echo "Hold the right Super key to record, release to transcribe and paste."
+echo "Or double-tap it to record hands-free, and double-tap again to transcribe."
+echo
+echo "To use Parakeet instead of Whisper: dictation-profile parakeet"

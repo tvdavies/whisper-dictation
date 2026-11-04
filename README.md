@@ -49,9 +49,23 @@ The install script will:
 - Create a Python venv at `~/.local/share/whisper-dictation/venv/`
 - Install Python dependencies including CUDA-enabled `llama-cpp-python`
 - Download the Qwen 2.5 7B Instruct GGUF model (~4.4 GB)
+- Swap the CPU `onnxruntime` for `onnxruntime-gpu` and download the Parakeet TDT 0.6B v2 ONNX model (~2.5 GB) to `~/.local/share/whisper-dictation/models/parakeet-tdt-0.6b-v2`
 - Install the launcher to `~/.local/bin/dictation`
 
 ## Usage
+
+Hold the trigger key to record and release it to transcribe and paste. Or double-tap it to record hands-free, then double-tap again to transcribe. A single quick tap is ignored.
+
+### Profiles
+
+`dictation-profile` rewrites `~/.config/whisper-dictation/env` and restarts the service:
+
+```bash
+dictation-profile parakeet  # GPU Parakeet TDT 0.6B v2 + Qwen formatting
+dictation-profile gpu       # GPU Whisper large-v3-turbo + Qwen formatting
+dictation-profile cpu       # CPU Whisper tiny.en, no formatting
+dictation-profile status
+```
 
 ### systemd service (recommended)
 
@@ -87,6 +101,11 @@ bindsym $mod+d exec --no-startup-id ~/.local/bin/dictation
 ### CLI flags
 
 ```
+--engine ENGINE     whisper or parakeet (default: whisper). parakeet ignores
+                    --model and --compute-type
+--parakeet-model DIR
+                    Parakeet ONNX model directory (default:
+                    ~/.local/share/whisper-dictation/models/parakeet-tdt-0.6b-v2)
 --model MODEL       Whisper model (default: large-v3-turbo)
                     Options: tiny, base, small, medium, large-v3, large-v3-turbo
 --language LANG     Language code or 'auto' (default: en)
